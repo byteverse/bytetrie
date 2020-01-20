@@ -1,0 +1,43 @@
+cabal-version: 3.0
+name: bytetrie
+version: 0.1.0.0
+author: Eric Demko
+maintainer: edemko@layer3com.com
+copyright: 2020 Layer 3 Communications
+category: Data
+build-type: Simple
+-- synopsis:
+-- description:
+-- bug-reports:
+-- license:
+license-file: LICENSE
+extra-source-files: CHANGELOG.md
+
+library
+  exposed-modules:
+    , Data.Trie.Word8
+  -- other-modules:
+  build-depends:
+    , base >=4.12 && <5
+    , byte-containers
+    , byteslice >=0.1.4
+    , unpacked-maybe >=0.1
+  hs-source-dirs: src
+  default-language: Haskell2010
+  ghc-options: -Wall
+
+test-suite test
+  main-is: Main.hs
+  type: exitcode-stdio-1.0
+  build-depends:
+    , base >=4.12 && <5
+    , byte-containers
+    , byteslice >=0.1.4
+    , bytetrie
+    , quickcheck-classes >=0.6.4
+    , tasty
+    , tasty-quickcheck
+    , unpacked-maybe >=0.1
+  hs-source-dirs: test
+  default-language: Haskell2010
+  ghc-options: -Wall -O2
