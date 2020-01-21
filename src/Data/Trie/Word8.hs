@@ -1,18 +1,26 @@
 {-# language BangPatterns #-}
+{-# language LambdaCase #-}
+{-# language TupleSections #-}
 module Data.Trie.Word8
   ( Trie
   , empty
   , singleton
   , insert
   , append
+  , unionWith
   , prepend
   , lookup
+  , fromList
+  , toList
   ) where
 
 import Prelude hiding (Maybe(..), lookup)
 import qualified Prelude
 
+import Control.Applicative ((<|>))
+import Data.Bifunctor (first)
 import Data.Bytes (Bytes)
+import Data.Foldable (foldl')
 import Data.Map.Word8 (Map)
 import Data.Maybe.Unpacked (Maybe(..))
 import Data.Word (Word8)
@@ -22,83 +30,100 @@ import qualified Data.Map.Word8 as Map
 import qualified Data.Maybe.Unpacked as Maybe
 
 -- the `Maybe a` is a possible endpoint; it comes before the children
--- INVARIANT: Run ctor never has empty Bytes
+-- INVARIANT: Run ctor never has Bytes length < 2
 data Trie a
-  = Nil {-# unpack #-} !(Maybe a)
-  | Branch {-# unpack #-} !(Maybe a) !(Map (Trie a))
+  -- TODO could save four machine words with a separate Nil case
+  = Branch {-# unpack #-} !(Maybe a) !(Map (Trie a))
   -- TODO use Bytes? or ByteArray directly?
   -- ByteArray uses more copying on insert, but lookup may be faster
   -- TODO it seems like I should be able to inline the Trie, but would that help?
   | Run {-# unpack #-} !(Maybe a) {-# unpack #-} !Bytes !(Trie a)
   deriving (Eq{- TODO needs instance for Map, Functor-})
 
+instance Semigroup a => Semigroup (Trie a) where (<>) = append
+instance Semigroup a => Monoid (Trie a) where mempty = empty
+instance Show a => Show (Trie a) where show = show . toList
+
 
 ------------ Construction ------------
 
 empty :: Trie a
-empty = Nil Nothing
+empty = Branch Nothing Map.empty
 
 singleton :: Bytes -> a -> Trie a
-singleton k v
-  | Bytes.null k = Nil (Just v)
-  | otherwise = Run Nothing k $ Nil (Just v)
+singleton k v = prepend k $ Branch (Just v) Map.empty
 
+-- Use this internally instead of the Run ctor.
+-- This ensures the run length >= 2 invariant is maintained.
 prepend :: Bytes -> Trie a -> Trie a
-prepend bytes next
-  | Bytes.null bytes = next
-  | otherwise = Run Nothing bytes next
+prepend bytes next = case Bytes.length bytes of
+  0 -> next
+  1 -> Branch Nothing (Map.singleton (Bytes.unsafeIndex bytes 0) next)
+  _ -> Run Nothing bytes next
 
-insert :: Semigroup a => Bytes -> a -> Trie a -> Trie a
-insert k v' = (`append` singleton k v')
+insert :: Bytes -> a -> Trie a -> Trie a
+insert k v' = unionWith const (singleton k v')
 
 append :: Semigroup a => Trie a -> Trie a -> Trie a
-append (Nil a) (Nil b) =
-  Nil (a <> b)
-append (Nil a) (Branch b children') =
-  Branch (a <> b) children'
-append (Nil a) (Run b run' next') =
-  Run (a <> b) run' next'
-append (Branch a children) (Nil b) =
-  Branch (a <> b) children
-append (Branch a children) (Branch b children') =
-  Branch (a <> b) (Map.union children children')
-append (Branch a children) r@(Run _ _ _) =
-  Branch (a <> b) (Map.union children (Map.singleton c child'))
+append = unionWith (<>)
+
+unionWith :: (a -> a -> a) -> Trie a -> Trie a -> Trie a
+unionWith f trieA trieB = case (trieA, trieB) of
+  (Branch a children, Branch b children') ->
+    Branch (a `mergeValue` b) (mergeChildren children children')
+  (Branch a children, r@(Run _ _ _)) ->
+    Branch (a `mergeValue` b) (mergeChildren children (Map.singleton c child'))
+    where
+    (b, c, child') = unsafeUnconsRun r
+  (r@(Run _ _ _), Branch b children') ->
+    Branch (a `mergeValue` b) (mergeChildren (Map.singleton c child') children')
+    where
+    (a, c, child') = unsafeUnconsRun r
+  (Run a run next, Run b run' next') ->
+    if Bytes.null common
+      then
+        let mkChild bytes trie = case Bytes.uncons bytes of
+              Prelude.Just (c, k) -> Map.singleton c (prepend k trie)
+              Prelude.Nothing -> error "invariant violation: empty run bytes"
+            child = mkChild run next
+            child' = mkChild run' next'
+        in Branch (a `mergeValue` b) $ child `Map.union` child'
+      else
+        let child = prepend (uncommon run) next
+            child' = prepend (uncommon run') next'
+        in Run (a `mergeValue` b) common $ unionWith f child child'
+    where
+    common = sharedPrefix run run'
+    uncommon bytes = Bytes.unsafeDrop (Bytes.length common) bytes
   where
-  (b, c, child') = unsafeUnconsRun r
-append (Run a run next) (Nil b) =
-  (Run (a <> b) run next)
-append r@(Run _ _ _) (Branch b children') =
-  Branch (a <> b) (Map.union (Map.singleton c child') children')
+    mergeChildren left right = Map.unionWith (unionWith f) left right
+    mergeValue Nothing Nothing = Nothing
+    mergeValue (Just x) (Just y) = Just (f x y)
+    mergeValue x y = x <|> y
+
+
+------------ Conversion ------------
+
+fromList :: [(Bytes, a)] -> Trie a
+fromList kvs = foldl' (flip $ unionWith const . uncurry singleton) empty kvs
+
+toList :: Trie a -> [(Bytes, a)]
+toList = \case
+  Branch valO children -> fromValue valO ++ Map.foldrWithKeys f [] children
+    where
+    f k v acc = prependList (Bytes.singleton k) (toList v) ++ acc
+  Run valO run next -> fromValue valO ++ prependList run (toList next)
   where
-  (a, c, child') = unsafeUnconsRun r
-append (Run a run next) (Run b run' next') =
-  if Bytes.null common
-    then
-      let mkChild bytes trie = case uncons bytes of
-            Just (c, k) -> Map.singleton c (prepend k trie)
-            Nothing -> error "invariant violation: empty run bytes"
-          child = mkChild run next
-          child' = mkChild run' next'
-      in Branch (a <> b) $ child `Map.union` child'
-    else
-      let child = prepend (uncommon run) next
-          child' = prepend (uncommon run') next'
-      in Run (a <> b) common $ append child child'
-  where
-  common = sharedPrefix run run'
-  uncommon bytes = Bytes.unsafeDrop (Bytes.length common) bytes
+  fromValue valO = (mempty,) <$> Maybe.maybeToList valO
+  prependList run list = first (run <>) <$> list
 
 
 ------------ Query ------------
 
 lookup :: Bytes -> Trie a -> Prelude.Maybe a
-lookup k (Nil valO)
-  | Bytes.null k = Maybe.toBaseMaybe valO
-  | otherwise = Prelude.Nothing
-lookup k (Branch valO children) = case uncons k of
-  Nothing -> Maybe.toBaseMaybe valO
-  Just (c, k') -> lookup k' =<< Map.lookup c children
+lookup k (Branch valO children) = case Bytes.uncons k of
+  Prelude.Nothing -> Maybe.toBaseMaybe valO
+  Prelude.Just (c, k') -> lookup k' =<< Map.lookup c children
 lookup k (Run v run next)
   | Bytes.null k = Maybe.toBaseMaybe v
   | run `Bytes.isPrefixOf` k =
@@ -113,19 +138,12 @@ unsafeUnconsRun :: Trie a -> (Maybe a, Word8, Trie a)
 unsafeUnconsRun (Run v0 bs next) = (v0, c, run')
   where
   c = Bytes.unsafeIndex bs 0
-  run' = Run Nothing bs' next
   bs' = Bytes.unsafeDrop 1 bs
-unsafeUnconsRun (Nil _) = error "unsafeUnconsRun on Nil trie"
+  run' = prepend bs' next
 unsafeUnconsRun (Branch _ _) = error "unsafeUnconsRun on Branch trie"
 
 
 ------ Workarounds ------
-
--- FIXME move this upstream
-uncons :: Bytes -> Maybe (Word8, Bytes)
-uncons bytes
-  | Bytes.null bytes = Nothing
-  | otherwise = Just (Bytes.unsafeIndex bytes 0, Bytes.unsafeDrop 1 bytes)
 
 -- FIXME move this upstream
 sharedPrefix :: Bytes -> Bytes -> Bytes
