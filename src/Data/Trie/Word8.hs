@@ -4,18 +4,28 @@
 {-# language ScopedTypeVariables #-}
 {-# language TupleSections #-}
 module Data.Trie.Word8
-  ( Trie
+  (
+  -- * Trie Type
+    Trie
+  -- * Construction
   , empty
   , singleton
-  , insert
-  , append
-  , unionWith
-  , prepend
-  , lookup
-  , stripPrefix
-  , stripPrefixWithKey
+  -- ** Conversion
   , fromList
   , toList
+  -- ** Insertion
+  , insert
+  -- ** Combine
+  , union
+  , unionWith
+  , append
+  , prepend
+  -- * Query
+  -- ** Lookup
+  , lookup
+  -- ** Detect Prefixes
+  , stripPrefix
+  , stripPrefixWithKey
   ) where
 
 import Prelude hiding (lookup)
@@ -31,8 +41,25 @@ import qualified Data.Bytes as Bytes
 import qualified Data.Map.Word8 as Map
 import qualified Data.Maybe.Unpacked as UMaybe
 
--- the `Maybe a` is a possible endpoint; it comes before the children
--- INVARIANT: Run ctor never has Bytes length < 2
+-- | Tries implemented using a 256-entry bitmap as given in
+-- "Data.Map.Word8".
+-- This means that each branch point can be navigated with only
+-- some bit manipulations and adding an offset.
+-- On sparse data, this should save a lot of space relative to holding
+-- a 256-entry pointer array.
+--
+-- This data type has 'Branch' and 'Run' nodes.
+-- Branches continue on a single byte.
+-- Runs continue on a prefix of two or more bytes.
+-- Leaves are branches without children,
+-- and a single-character run is a 'Branch' with one child.
+-- This means that there is exactly one 'Trie' representation
+-- (where each run is length ≥ 2) for each trie.
+--
+-- In each constructor, the @UMaybe.Maybe a@ is a possible entry;
+-- it comes before any child bytes.
+--
+-- INVARIANT: The Run constructor never has @Bytes.length < 2@.
 data Trie a
   -- TODO could save four machine words with a separate Nil case
   = Branch {-# unpack #-} !(UMaybe.Maybe a) !(Map (Trie a))
@@ -49,26 +76,46 @@ instance Show a => Show (Trie a) where show = show . toList
 
 ------------ Construction ------------
 
+-- | The empty trie.
 empty :: Trie a
 empty = Branch UMaybe.Nothing Map.empty
 
+-- | A trie with a single element.
 singleton :: Bytes -> a -> Trie a
 singleton k v = prepend k $ Branch (UMaybe.Just v) Map.empty
 
--- Use this internally instead of the Run ctor.
--- This ensures the run length >= 2 invariant is maintained.
+-- | Prepend every key in the 'Trie' with the given 'Bytes'.
+--
+-- This should be used internally instead of the Run ctor,
+-- thereby ensuring the run length >= 2 invariant is maintained.
+-- It is exported anyway because someone may find it useful.
 prepend :: Bytes -> Trie a -> Trie a
 prepend bytes next = case Bytes.length bytes of
   0 -> next
   1 -> Branch UMaybe.Nothing (Map.singleton (Bytes.unsafeIndex bytes 0) next)
   _ -> Run UMaybe.Nothing bytes next
 
+-- | Insert a new key/value into the trie.
+-- If the key is already present in the trie, the associated value is
+-- replaced with the new one.
 insert :: Bytes -> a -> Trie a -> Trie a
 insert k v' = unionWith const (singleton k v')
 
+-- TODO insertWith
+
+-- | Union of the two tries, but where a key appears in both,
+-- the associated values are combined with '(<>)' to produce the new value,
+-- i.e. @append == unionWith (<>)@.
 append :: Semigroup a => Trie a -> Trie a -> Trie a
 append = unionWith (<>)
 
+-- | The left-biased union of the two tries.
+-- It prefers the first when duplicate keys are encountered,
+-- i.e. @union == unionWith const@.
+union :: Trie a -> Trie a -> Trie a
+union = unionWith const
+
+-- | Union with a combining function.
 unionWith :: (a -> a -> a) -> Trie a -> Trie a -> Trie a
 unionWith f trieA trieB = case (trieA, trieB) of
   (Branch a children, Branch b children') ->
@@ -106,9 +153,13 @@ unionWith f trieA trieB = case (trieA, trieB) of
 
 ------------ Conversion ------------
 
+-- | Build a trie from a list of key/value pairs.
+-- If more than one value for the same key appears, the last value for that
+-- key is retained.
 fromList :: [(Bytes, a)] -> Trie a
 fromList kvs = foldl' (flip $ unionWith const . uncurry singleton) empty kvs
 
+-- | Convert the trie to a list of key/value pairs.
 toList :: Trie a -> [(Bytes, a)]
 toList = \case
   Branch valO children -> fromValue valO ++ Map.foldrWithKeys f [] children
@@ -122,6 +173,7 @@ toList = \case
 
 ------------ Query ------------
 
+-- | Lookup the value at the 'Bytes' key in the trie.
 lookup :: Bytes -> Trie a -> Maybe a
 lookup k (Branch valO children) = case Bytes.uncons k of
   Prelude.Nothing -> UMaybe.toBaseMaybe valO
@@ -133,9 +185,15 @@ lookup k (Run v run next)
     in lookup k' next
   | otherwise = Prelude.Nothing
 
+
+-- | Find the longest prefix of the input 'Bytes' which has a value in the trie.
+-- Returns the associated value and the remainder of the input after the prefix.
 stripPrefix :: Trie a -> Bytes -> Maybe (a, Bytes)
 stripPrefix trie inp = first snd <$> stripPrefixWithKey trie inp
 
+-- | Find the longest prefix of the input 'Bytes' which has a value in the trie.
+-- Returns the prefix and associated value found as a key/value tuple,
+-- and also the remainder of the input after the prefix.
 stripPrefixWithKey :: forall a. Trie a -> Bytes -> Maybe ((Bytes, a), Bytes)
 stripPrefixWithKey trie0 rawInp = go 0 Nothing trie0
   where

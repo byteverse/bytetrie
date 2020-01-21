@@ -24,7 +24,19 @@ main = defaultMain tests
 
 tests :: TestTree
 tests = testGroup "bytetrie"
-  [ testGroup "unionWith"
+  [ testGroup "lookup"
+    [ testProperty "lookup existing key" $
+      \(xs :: [(Bytes, Int)]) (k, v) ys ->
+      let alist = xs ++ [(k, v)] ++ ys
+      in if | Nothing <- lookup k ys ->
+              Trie.lookup k (Trie.fromList alist) === lookup k alist
+            | otherwise -> property Discard
+    , testProperty "lookup missing key" $
+      \(alist :: [(Bytes, Int)]) (k :: Bytes) ->
+        if | Just _ <- lookup k alist -> property Discard
+           | otherwise -> Trie.lookup k (Trie.fromList alist) === Nothing
+    ]
+  , testGroup "unionWith"
     [ lawsToTest (QCC.semigroupLaws (Proxy :: Proxy (Trie [Integer])))
     , lawsToTest (QCC.monoidLaws (Proxy :: Proxy (Trie [Integer])))
     , lawsToTest (QCC.commutativeMonoidLaws (Proxy :: Proxy (Trie (Sum Integer))))
