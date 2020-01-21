@@ -95,7 +95,7 @@ unionWith f trieA trieB = case (trieA, trieB) of
             child' = prepend (uncommon run') next'
         in Run (a `mergeValue` b) common $ unionWith f child child'
     where
-    common = sharedPrefix run run'
+    common = Bytes.longestCommonPrefix run run'
     uncommon bytes = Bytes.unsafeDrop (Bytes.length common) bytes
   where
     mergeChildren left right = Map.unionWith (unionWith f) left right
@@ -171,18 +171,3 @@ unsafeUnconsRun (Run v0 bs next) = (v0, c, run')
   bs' = Bytes.unsafeDrop 1 bs
   run' = prepend bs' next
 unsafeUnconsRun (Branch _ _) = error "unsafeUnconsRun on Branch trie"
-
-
------- Workarounds ------
-
--- FIXME move this upstream
-sharedPrefix :: Bytes -> Bytes -> Bytes
-sharedPrefix a b = loop 0
-  where
-  loop :: Int -> Bytes
-  loop !into
-    | into < maxLen
-      && Bytes.unsafeIndex a into == Bytes.unsafeIndex b into
-      = loop (into + 1)
-    | otherwise = Bytes.unsafeTake into a
-  maxLen = min (Bytes.length a) (Bytes.length b)
