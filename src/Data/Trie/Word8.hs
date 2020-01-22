@@ -206,15 +206,14 @@ stripPrefixWithKey :: forall a. Trie a -> Bytes -> Maybe ((Bytes, a), Bytes)
 stripPrefixWithKey trie0 rawInp = go 0 Nothing trie0
   where
   go :: Int -> Maybe (Bytes, a) -> Trie a -> Maybe ((Bytes, a), Bytes)
-  go !into !prior trie =
+  go !into !prior node =
     let inp = Bytes.unsafeDrop into rawInp
-        candidate = (Bytes.unsafeTake into rawInp,) <$> extractValue trie
+        candidate = (Bytes.unsafeTake into rawInp,) <$> extractValue node
         found = candidate <|> prior
-    in if | Bytes.null inp -> mkReturn <$> found
-          | Run _ run next <- trie
+    in if | Run _ run next <- node
           , run `Bytes.isPrefixOf` inp
             -> go (into + Bytes.length run) found next
-          | Branch _ children <- trie
+          | Branch _ children <- node
           , Just (c, _) <- Bytes.uncons inp
           , Just next <- Map.lookup c children
             -> go (into + 1) found next
