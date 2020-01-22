@@ -15,6 +15,7 @@ module Data.Trie.Word8
   , toList
   -- ** Insertion
   , insert
+  , insertWith
   -- ** Combine
   , union
   , unionWith
@@ -98,10 +99,17 @@ prepend bytes next = case Bytes.length bytes of
 -- | Insert a new key/value into the trie.
 -- If the key is already present in the trie, the associated value is
 -- replaced with the new one.
+-- 'insert' is equivalent to 'insertWith' 'const'.
 insert :: Bytes -> a -> Trie a -> Trie a
-insert k v' = unionWith const (singleton k v')
+insert = insertWith const
 
--- TODO insertWith
+-- | Insert with a function, combining new value and old value.
+-- @'insertWith' f key value trie@ will insert the pair @(key, value)@
+-- into @trie@ if @key@ does not exist in the trie.
+-- If the key does exist, the function will insert the pair
+-- @(key, f new_value old_value)@.
+insertWith :: (a -> a -> a) -> Bytes -> a -> Trie a -> Trie a
+insertWith f k v = unionWith f (singleton k v)
 
 -- | Union of the two tries, but where a key appears in both,
 -- the associated values are combined with '(<>)' to produce the new value,
@@ -198,7 +206,7 @@ stripPrefixWithKey :: forall a. Trie a -> Bytes -> Maybe ((Bytes, a), Bytes)
 stripPrefixWithKey trie0 rawInp = go 0 Nothing trie0
   where
   go :: Int -> Maybe (Bytes, a) -> Trie a -> Maybe ((Bytes, a), Bytes)
-  go into prior trie =
+  go !into !prior trie =
     let inp = Bytes.unsafeDrop into rawInp
         candidate = (Bytes.unsafeTake into rawInp,) <$> extractValue trie
         found = candidate <|> prior
