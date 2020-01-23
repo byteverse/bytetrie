@@ -30,6 +30,9 @@ module Data.Trie.Word8
   -- * Query
   -- ** Lookup
   , lookup
+  -- ** Size
+  , null
+  , size
   -- ** Detect Prefixes
   , stripPrefix
   , stripPrefixWithKey
@@ -57,34 +60,35 @@ import qualified Data.Maybe.Unpacked as UMaybe
 -- a 256-entry pointer array.
 --
 -- This data type has 'Branch' and 'Run' nodes.
--- Branches continue on a single byte.
--- Runs continue on a prefix of two or more bytes.
--- Leaves are branches without children,
--- and a single-character run is a 'Branch' with one child.
--- This means that there is exactly one 'Trie' representation
--- (where each run is length ≥ 2) for each trie.
+-- Branches never have only a single child,
+-- and Runs always have at least one byte.
+-- Leaves are branches without children.
+-- Once the invariants are met (see below),
+-- there is exactly one 'Trie' representation for each trie.
 --
 -- In each constructor, the @UMaybe.Maybe a@ is a possible entry;
 -- it comes before any child bytes.
 --
--- INVARIANT: The Run constructor never has @Bytes.length < 2@.
--- INVARIANT: No child of a node has size zero.
--- INVARIANT: The next node after a Run is neither linear nor empty.
--- INVARIANT: If a Branch has no value and only a single child,
---            that child must not be linear.
+-- INVARIANT: The Run constructor never has a linear child.
+--            Linear nodes are those with no value and exactly one child,
+--            which in this case is only valueless runs.
+-- INVARIANT: The Run constructor never has zero bytes.
+-- INVARIANT: The Branch constructor never has exactly one child.
+-- INVARIANT: No child of a node has size zero. That includes:
+--              No child of a branch is ever null.
+--              The next node after a run is never null.
 data Trie a
-  -- TODO could save four machine words with a separate Nil case
+  -- TODO could save four machine words with a separate Tip case
+  -- also, with a Tip, branches would always have children >= 2
   = UnsafeBranch {-# unpack #-} !(UMaybe.Maybe a) !(Map (Trie a))
-  -- TODO use Bytes? or ByteArray directly?
-  -- ByteArray uses more copying on insert, but lookup may be faster
-  -- TODO it seems like I should be able to inline the Trie, but would that help?
+  -- TODO use ByteArray directly
+  -- ByteArray uses more copying on modification, but lookup may be faster
   | UnsafeRun {-# unpack #-} !(UMaybe.Maybe a) {-# unpack #-} !Bytes !(Trie a)
   deriving (Eq{- TODO needs instance for Map, Functor-})
 
 instance Semigroup a => Semigroup (Trie a) where (<>) = append
 instance Semigroup a => Monoid (Trie a) where mempty = empty
--- instance Show a => Show (Trie a) where show = show . toList
-deriving stock instance Show a => Show (Trie a)
+instance Show a => Show (Trie a) where show = show . toList
 
 
 {-# complete Run, Branch #-}
@@ -93,23 +97,18 @@ pattern Run :: UMaybe.Maybe a -> Bytes -> Trie a -> Trie a
 pattern Run v run next <- UnsafeRun v run next
   where
   Run v run next
-    | null next = Branch v Map.empty
-    | Just (bytes', next') <- fromLinear next
-      = Run v (run <> bytes') next'
+    | null next = UnsafeBranch v Map.empty
     | Bytes.null run = next -- WARNING: throws away `v`, value/non-value from `next`
-    | Just (c, rest) <- Bytes.uncons run
-    , Bytes.null rest
-      = Branch v (Map.singleton c next)
+    | Just (run', next') <- fromLinear next
+      = Run v (run <> run') next'
     | otherwise = UnsafeRun v run next
 
 pattern Branch :: UMaybe.Maybe a -> Map (Trie a) -> Trie a
 pattern Branch v children <- UnsafeBranch v children
   where
   Branch v (removeEmptyChildren -> children)
-    -- NOTE empty value and children is already empty, so I don't "rewrite" to empty
     | Just (c, child) <- fromSingletonMap children
-    , Just (bytesB, grandchild) <- fromLinear child
-      = Run v (Bytes.singleton c <> bytesB) grandchild
+      = Run v (Bytes.singleton c) child
     | otherwise = UnsafeBranch v children
 removeEmptyChildren :: Map (Trie a) -> Map (Trie a)
 removeEmptyChildren = Map.foldrWithKeys f Map.empty
@@ -120,20 +119,18 @@ removeEmptyChildren = Map.foldrWithKeys f Map.empty
 -- I.e. it never returns an empty bytes in the tuple.
 fromLinear :: Trie a -> Maybe (Bytes, Trie a)
 fromLinear (Run UMaybe.Nothing run next) = Just (run, next)
-fromLinear (Branch UMaybe.Nothing children)
-  | Just (c, child) <- fromSingletonMap children
-  = Just (Bytes.singleton c, child)
 fromLinear _ = Nothing
+
 
 ------------ Construction ------------
 
 -- | The empty trie.
 empty :: Trie a
-empty = Branch UMaybe.Nothing Map.empty
+empty = UnsafeBranch UMaybe.Nothing Map.empty
 
 -- | A trie with a single element.
 singleton :: Bytes -> a -> Trie a
-singleton k v = prepend k $ Branch (UMaybe.Just v) Map.empty
+singleton k v = prepend k $ UnsafeBranch (UMaybe.Just v) Map.empty
 
 -- | Prepend every key in the 'Trie' with the given 'Bytes'.
 --
@@ -159,9 +156,7 @@ insertWith :: (a -> a -> a) -> Bytes -> a -> Trie a -> Trie a
 insertWith f k v = unionWith f (singleton k v)
 
 delete :: Bytes -> Trie a -> Trie a
-delete k0 trie
-  | Bytes.null k0 = deleteTop trie
-  | otherwise = go k0 trie
+delete k0 trie = go k0 trie
   where
   -- `go` is not always tail-recursive.
   -- Instead, each node with exactly one child must be checked after the
@@ -176,7 +171,7 @@ delete k0 trie
     -- found key, therefore delete
     | Bytes.null key
     , UMaybe.Just _ <- v -- NOTE this is redundant now, but when I use cps, it won't be
-      = Run UMaybe.Nothing run next
+      = prepend run next
     -- carry on searching for the key
     | Just key' <- Bytes.stripPrefix run key
       = Run v run (go key' next)
@@ -186,22 +181,13 @@ delete k0 trie
     -- found key, therefore delete
     | Bytes.null key
     , UMaybe.Just _ <- v
-      = Branch UMaybe.Nothing children
+      = UnsafeBranch UMaybe.Nothing children
     -- carry on searching for the key
     | Just (c, key') <- Bytes.uncons key
     , Just child <- Map.lookup c children
       = Branch v (insertMap c (go key' child) children)
     -- key not present
     | otherwise = node
-
-deleteTop :: Trie a -> Trie a
-deleteTop (Run _ run next)
-  | null next = empty
-  | otherwise = Run UMaybe.Nothing run next
-deleteTop (Branch _ children)
-  | Just (_, child) <- fromSingletonMap children
-  , null child = empty
-  | otherwise = Branch UMaybe.Nothing children
 
 
 -- | Union of the two tries, but where a key appears in both,
@@ -220,7 +206,7 @@ union = unionWith const
 unionWith :: (a -> a -> a) -> Trie a -> Trie a -> Trie a
 unionWith f trieA trieB = case (trieA, trieB) of
   (Branch a children, Branch b children') ->
-    Branch (a `mergeValue` b) (mergeChildren children children')
+    UnsafeBranch (a `mergeValue` b) (mergeChildren children children')
   (Branch a children, r@(Run _ _ _)) ->
     Branch (a `mergeValue` b) (mergeChildren children (Map.singleton c child'))
     where
@@ -237,7 +223,7 @@ unionWith f trieA trieB = case (trieA, trieB) of
               Prelude.Nothing -> error "invariant violation: empty run bytes"
             child = mkChild run next
             child' = mkChild run' next'
-        in Branch (a `mergeValue` b) $ child `Map.union` child'
+        in UnsafeBranch (a `mergeValue` b) $ child `Map.union` child'
       else
         let child = prepend (uncommon run) next
             child' = prepend (uncommon run') next'
@@ -314,17 +300,26 @@ stripPrefixWithKey trie0 rawInp = go 0 Nothing trie0
   mkReturn (prefix, v) =
     let post = Bytes.unsafeDrop (Bytes.length prefix) rawInp
     in ((prefix, v), post)
-  topValue :: Trie a -> Maybe a
-  topValue = \case
-    Run v _ _ -> UMaybe.toBaseMaybe v
-    Branch v _ -> UMaybe.toBaseMaybe v
+
 
 null :: Trie a -> Bool
 null (Branch UMaybe.Nothing children) = nullMap children
 null _ = False
 
+size :: Trie a -> Int
+size node = here + under
+  where
+  here = maybe 0 (const 1) (topValue node)
+  under = case node of
+    Run _ _ next -> size next
+    Branch _ children -> Map.foldrWithKeys (\_ child !acc -> acc + size child) 0 children
 
 ------ Helpers ------
+
+topValue :: Trie a -> Maybe a
+topValue = \case
+  Run v _ _ -> UMaybe.toBaseMaybe v
+  Branch v _ -> UMaybe.toBaseMaybe v
 
 unsafeUnconsRun :: Trie a -> (UMaybe.Maybe a, Word8, Trie a)
 unsafeUnconsRun (Run v0 bs next) = (v0, c, run')
