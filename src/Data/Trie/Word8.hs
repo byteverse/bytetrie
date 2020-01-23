@@ -1,4 +1,5 @@
 {-# language BangPatterns #-}
+{-# language DeriveFunctor #-}
 {-# language DerivingStrategies #-}
 {-# language LambdaCase #-}
 {-# language MultiWayIf #-}
@@ -7,6 +8,7 @@
 {-# language StandaloneDeriving #-}
 {-# language TupleSections #-}
 {-# language ViewPatterns #-}
+
 module Data.Trie.Word8
   (
   -- * Trie Type
@@ -85,7 +87,7 @@ data Trie a
   -- TODO use ByteArray directly
   -- ByteArray uses more copying on modification, but lookup may be faster
   | UnsafeRun {-# unpack #-} !(UMaybe.Maybe a) {-# unpack #-} !Bytes !(Trie a)
-  deriving (Eq{- TODO needs instance for Map, Functor-})
+  deriving (Eq, Functor)
 
 instance Semigroup a => Semigroup (Trie a) where (<>) = append
 instance Semigroup a => Monoid (Trie a) where mempty = empty
@@ -125,7 +127,7 @@ fromLinear _ = Nothing
 
 valid :: Trie a -> Bool
 valid (Tip _) = True
-valid (Run v run next)
+valid (Run _ run next)
   = not (Bytes.null run)
     && isNothing (fromLinear next)
     && not (null next)
@@ -275,8 +277,8 @@ fromList :: [(Bytes, a)] -> Trie a
 fromList kvs = foldl' (\xs (k, v) -> insert k v xs) empty kvs
 
 -- | Convert the trie to a list of key/value pairs.
+-- The resulting list has its keys sorted in ascending order.
 toList :: Trie a -> [(Bytes, a)]
--- FIXME ensure this output is sorted, then document that fact
 toList = \case
   Tip valO -> fromValue valO
   Run valO run next -> fromValue valO ++ prependList run (toList next)

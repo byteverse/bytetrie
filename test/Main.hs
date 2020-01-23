@@ -4,6 +4,7 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 import Data.Bytes.Types (Bytes(Bytes))
+import Data.List (sort)
 import Data.Monoid (Sum)
 import Data.Proxy (Proxy(..))
 import Data.Trie.Word8 (Trie)
@@ -54,6 +55,7 @@ tests = testGroup "bytetrie"
     , lawsToTest (QCC.monoidLaws (Proxy :: Proxy (Trie [Integer])))
     , lawsToTest (QCC.commutativeMonoidLaws (Proxy :: Proxy (Trie (Sum Integer))))
     ]
+  , lawsToTest (QCC.functorLaws (Proxy :: Proxy Trie))
   , testGroup "stripPrefix"
     [ testProperty "finds longest prefix" $
       \(a :: Bytes) (b :: Bytes) (c :: Bytes) (d :: Bytes) ->
@@ -84,6 +86,10 @@ tests = testGroup "bytetrie"
               in Trie.delete k t === t'
            | otherwise -> property Discard
     ]
+  , testProperty "toList is sorted" $ \alist ->
+      let a = Trie.fromList alist :: Trie ()
+          out = Trie.toList a
+      in out == sort out
   ]
 
 instance (Arbitrary a) => Arbitrary (Trie a) where
