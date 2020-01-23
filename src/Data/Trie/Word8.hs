@@ -2,6 +2,7 @@
 {-# language DerivingStrategies #-}
 {-# language LambdaCase #-}
 {-# language MultiWayIf #-}
+{-# language PatternSynonyms #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
 {-# language TupleSections #-}
@@ -69,14 +70,15 @@ import qualified Data.Maybe.Unpacked as UMaybe
 -- INVARIANT: The Run constructor never has @Bytes.length < 2@.
 -- INVARIANT: No child of a node has size zero.
 -- INVARIANT: The next node after a Run is neither linear nor empty.
--- INVARIANT: If a Branch has no value and only a single child, that child is not linear.
+-- INVARIANT: If a Branch has no value and only a single child,
+--            that child must not be linear.
 data Trie a
   -- TODO could save four machine words with a separate Nil case
-  = Branch {-# unpack #-} !(UMaybe.Maybe a) !(Map (Trie a))
+  = UnsafeBranch {-# unpack #-} !(UMaybe.Maybe a) !(Map (Trie a))
   -- TODO use Bytes? or ByteArray directly?
   -- ByteArray uses more copying on insert, but lookup may be faster
   -- TODO it seems like I should be able to inline the Trie, but would that help?
-  | Run {-# unpack #-} !(UMaybe.Maybe a) {-# unpack #-} !Bytes !(Trie a)
+  | UnsafeRun {-# unpack #-} !(UMaybe.Maybe a) {-# unpack #-} !Bytes !(Trie a)
   deriving (Eq{- TODO needs instance for Map, Functor-})
 
 instance Semigroup a => Semigroup (Trie a) where (<>) = append
@@ -85,6 +87,43 @@ instance Semigroup a => Monoid (Trie a) where mempty = empty
 deriving stock instance Show a => Show (Trie a)
 
 
+{-# complete Run, Branch #-}
+
+pattern Run :: UMaybe.Maybe a -> Bytes -> Trie a -> Trie a
+pattern Run v run next <- UnsafeRun v run next
+  where
+  Run v run next
+    | null next = Branch v Map.empty
+    | Just (bytes', next') <- fromLinear next
+      = Run v (run <> bytes') next'
+    | Bytes.null run = next -- WARNING: throws away `v`, value/non-value from `next`
+    | Just (c, rest) <- Bytes.uncons run
+    , Bytes.null rest
+      = Branch v (Map.singleton c next)
+    | otherwise = UnsafeRun v run next
+
+pattern Branch :: UMaybe.Maybe a -> Map (Trie a) -> Trie a
+pattern Branch v children <- UnsafeBranch v children
+  where
+  Branch v (removeEmptyChildren -> children)
+    -- NOTE empty value and children is already empty, so I don't "rewrite" to empty
+    | Just (c, child) <- fromSingletonMap children
+    , Just (bytesB, grandchild) <- fromLinear child
+      = Run v (Bytes.singleton c <> bytesB) grandchild
+    | otherwise = UnsafeBranch v children
+removeEmptyChildren :: Map (Trie a) -> Map (Trie a)
+removeEmptyChildren = Map.foldrWithKeys f Map.empty
+  where
+  f k v xs = if null v then xs else insertMap k v xs
+
+-- Get nodes with no value, and exactly one possible next byte.
+-- I.e. it never returns an empty bytes in the tuple.
+fromLinear :: Trie a -> Maybe (Bytes, Trie a)
+fromLinear (Run UMaybe.Nothing run next) = Just (run, next)
+fromLinear (Branch UMaybe.Nothing children)
+  | Just (c, child) <- fromSingletonMap children
+  = Just (Bytes.singleton c, child)
+fromLinear _ = Nothing
 
 ------------ Construction ------------
 
@@ -102,10 +141,7 @@ singleton k v = prepend k $ Branch (UMaybe.Just v) Map.empty
 -- thereby ensuring the run length >= 2 invariant is maintained.
 -- It is exported anyway because someone may find it useful.
 prepend :: Bytes -> Trie a -> Trie a
-prepend bytes next = case Bytes.length bytes of
-  0 -> next
-  1 -> Branch UMaybe.Nothing (Map.singleton (Bytes.unsafeIndex bytes 0) next)
-  _ -> Run UMaybe.Nothing bytes next
+prepend bytes next = Run UMaybe.Nothing bytes next
 
 -- | Insert a new key/value into the trie.
 -- If the key is already present in the trie, the associated value is
@@ -143,53 +179,20 @@ delete k0 trie
       = Run UMaybe.Nothing run next
     -- carry on searching for the key
     | Just key' <- Bytes.stripPrefix run key
-      = renormalize $ Run v run (go key' next)
+      = Run v run (go key' next)
     -- key not present
     | otherwise = node
   go key node@(Branch v children)
     -- found key, therefore delete
     | Bytes.null key
     , UMaybe.Just _ <- v
-      = renormalize $ Branch UMaybe.Nothing children
+      = Branch UMaybe.Nothing children
     -- carry on searching for the key
     | Just (c, key') <- Bytes.uncons key
     , Just child <- Map.lookup c children
-      = renormalize $ Branch v (insertMap c (go key' child) children)
+      = Branch v (insertMap c (go key' child) children)
     -- key not present
     | otherwise = node
-  -- renormalize :: Trie a -> Trie a
-  renormalize node@(Run v runA next)
-    | null next
-    , UMaybe.Nothing <- v
-      = empty
-    | Just (bytesB, next') <- fromLinear next
-      = Run v (runA <> bytesB) next'
-    | otherwise = node
-  renormalize (Branch v (removeEmptyChildren -> children))
-    -- NOTE empty value and children is already empty, so I don't "rewrite" to empty
-    | Just (_, child) <- fromSingletonMap children
-    , null child
-      -- NOTE if v is Nothing, then this is already empty
-      = Branch v Map.empty
-    | Just (c, child) <- fromSingletonMap children
-    , Just (bytesB, grandchild) <- fromLinear child
-      = Run v (Bytes.singleton c <> bytesB) grandchild
-    | otherwise = Branch v children
-  removeEmptyChildren :: Map (Trie a) -> Map (Trie a)
-  removeEmptyChildren = Map.foldrWithKeys f Map.empty
-    where
-    f k v xs = if null v then xs else insertMap k v xs
-  -- Get nodes with no value, and exactly one possible next byte.
-  -- I.e. it never returns an empty bytes in the tuple.
-  fromLinear :: Trie a -> Maybe (Bytes, Trie a)
-  fromLinear (Run UMaybe.Nothing run next) = Just (run, next)
-  fromLinear (Branch UMaybe.Nothing children)
-    | Just (c, child) <- fromSingletonMap children
-    = Just (Bytes.singleton c, child)
-  fromLinear _ = Nothing
-  -- After deleting from the single child of this node,
-  -- merge this node with its child into a Run if possible.
-  -- If this node does not have a single child, do nothing.
 
 deleteTop :: Trie a -> Trie a
 deleteTop (Run _ run next)
