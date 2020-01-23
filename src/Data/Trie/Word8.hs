@@ -1,8 +1,11 @@
 {-# language BangPatterns #-}
+{-# language DerivingStrategies #-}
 {-# language LambdaCase #-}
 {-# language MultiWayIf #-}
 {-# language ScopedTypeVariables #-}
+{-# language StandaloneDeriving #-}
 {-# language TupleSections #-}
+{-# language ViewPatterns #-}
 module Data.Trie.Word8
   (
   -- * Trie Type
@@ -16,6 +19,8 @@ module Data.Trie.Word8
   -- ** Insertion
   , insert
   , insertWith
+  -- ** Deletion
+  , delete
   -- ** Combine
   , union
   , unionWith
@@ -29,7 +34,8 @@ module Data.Trie.Word8
   , stripPrefixWithKey
   ) where
 
-import Prelude hiding (lookup)
+import Prelude hiding (null, lookup)
+import qualified Prelude
 
 import Control.Applicative ((<|>))
 import Data.Bifunctor (first)
@@ -61,6 +67,9 @@ import qualified Data.Maybe.Unpacked as UMaybe
 -- it comes before any child bytes.
 --
 -- INVARIANT: The Run constructor never has @Bytes.length < 2@.
+-- INVARIANT: No child of a node has size zero.
+-- INVARIANT: The next node after a Run is neither linear nor empty.
+-- INVARIANT: If a Branch has no value and only a single child, that child is not linear.
 data Trie a
   -- TODO could save four machine words with a separate Nil case
   = Branch {-# unpack #-} !(UMaybe.Maybe a) !(Map (Trie a))
@@ -72,7 +81,9 @@ data Trie a
 
 instance Semigroup a => Semigroup (Trie a) where (<>) = append
 instance Semigroup a => Monoid (Trie a) where mempty = empty
-instance Show a => Show (Trie a) where show = show . toList
+-- instance Show a => Show (Trie a) where show = show . toList
+deriving stock instance Show a => Show (Trie a)
+
 
 
 ------------ Construction ------------
@@ -110,6 +121,85 @@ insert = insertWith const
 -- @(key, f new_value old_value)@.
 insertWith :: (a -> a -> a) -> Bytes -> a -> Trie a -> Trie a
 insertWith f k v = unionWith f (singleton k v)
+
+delete :: Bytes -> Trie a -> Trie a
+delete k0 trie
+  | Bytes.null k0 = deleteTop trie
+  | otherwise = go k0 trie
+  where
+  -- `go` is not always tail-recursive.
+  -- Instead, each node with exactly one child must be checked after the
+  --  deletion to ensure that child is non-empty.
+  -- TODO
+  -- However, as soon as it is known that the size must be greater than one,
+  --  we can throw away all queued normalizations so far.
+  -- Therefore, we maintain a delimited continuation as an accumulator,
+  --  but I'm not yet sure how to manually store it.
+  -- go :: Bytes -> Trie a
+  go key node@(Run v run next)
+    -- found key, therefore delete
+    | Bytes.null key
+    , UMaybe.Just _ <- v -- NOTE this is redundant now, but when I use cps, it won't be
+      = Run UMaybe.Nothing run next
+    -- carry on searching for the key
+    | Just key' <- Bytes.stripPrefix run key
+      = renormalize $ Run v run (go key' next)
+    -- key not present
+    | otherwise = node
+  go key node@(Branch v children)
+    -- found key, therefore delete
+    | Bytes.null key
+    , UMaybe.Just _ <- v
+      = renormalize $ Branch UMaybe.Nothing children
+    -- carry on searching for the key
+    | Just (c, key') <- Bytes.uncons key
+    , Just child <- Map.lookup c children
+      = renormalize $ Branch v (insertMap c (go key' child) children)
+    -- key not present
+    | otherwise = node
+  -- renormalize :: Trie a -> Trie a
+  renormalize node@(Run v runA next)
+    | null next
+    , UMaybe.Nothing <- v
+      = empty
+    | Just (bytesB, next') <- fromLinear next
+      = Run v (runA <> bytesB) next'
+    | otherwise = node
+  renormalize (Branch v (removeEmptyChildren -> children))
+    -- NOTE empty value and children is already empty, so I don't "rewrite" to empty
+    | Just (_, child) <- fromSingletonMap children
+    , null child
+      -- NOTE if v is Nothing, then this is already empty
+      = Branch v Map.empty
+    | Just (c, child) <- fromSingletonMap children
+    , Just (bytesB, grandchild) <- fromLinear child
+      = Run v (Bytes.singleton c <> bytesB) grandchild
+    | otherwise = Branch v children
+  removeEmptyChildren :: Map (Trie a) -> Map (Trie a)
+  removeEmptyChildren = Map.foldrWithKeys f Map.empty
+    where
+    f k v xs = if null v then xs else insertMap k v xs
+  -- Get nodes with no value, and exactly one possible next byte.
+  -- I.e. it never returns an empty bytes in the tuple.
+  fromLinear :: Trie a -> Maybe (Bytes, Trie a)
+  fromLinear (Run UMaybe.Nothing run next) = Just (run, next)
+  fromLinear (Branch UMaybe.Nothing children)
+    | Just (c, child) <- fromSingletonMap children
+    = Just (Bytes.singleton c, child)
+  fromLinear _ = Nothing
+  -- After deleting from the single child of this node,
+  -- merge this node with its child into a Run if possible.
+  -- If this node does not have a single child, do nothing.
+
+deleteTop :: Trie a -> Trie a
+deleteTop (Run _ run next)
+  | null next = empty
+  | otherwise = Run UMaybe.Nothing run next
+deleteTop (Branch _ children)
+  | Just (_, child) <- fromSingletonMap children
+  , null child = empty
+  | otherwise = Branch UMaybe.Nothing children
+
 
 -- | Union of the two tries, but where a key appears in both,
 -- the associated values are combined with '(<>)' to produce the new value,
@@ -165,7 +255,7 @@ unionWith f trieA trieB = case (trieA, trieB) of
 -- If more than one value for the same key appears, the last value for that
 -- key is retained.
 fromList :: [(Bytes, a)] -> Trie a
-fromList kvs = foldl' (flip $ unionWith const . uncurry singleton) empty kvs
+fromList kvs = foldl' (\xs (k, v) -> insert k v xs) empty kvs
 
 -- | Convert the trie to a list of key/value pairs.
 toList :: Trie a -> [(Bytes, a)]
@@ -208,7 +298,7 @@ stripPrefixWithKey trie0 rawInp = go 0 Nothing trie0
   go :: Int -> Maybe (Bytes, a) -> Trie a -> Maybe ((Bytes, a), Bytes)
   go !into !prior node =
     let inp = Bytes.unsafeDrop into rawInp
-        candidate = (Bytes.unsafeTake into rawInp,) <$> extractValue node
+        candidate = (Bytes.unsafeTake into rawInp,) <$> topValue node
         found = candidate <|> prior
     in if | Run _ run next <- node
           , run `Bytes.isPrefixOf` inp
@@ -221,10 +311,14 @@ stripPrefixWithKey trie0 rawInp = go 0 Nothing trie0
   mkReturn (prefix, v) =
     let post = Bytes.unsafeDrop (Bytes.length prefix) rawInp
     in ((prefix, v), post)
-  extractValue :: Trie a -> Maybe a
-  extractValue = \case
+  topValue :: Trie a -> Maybe a
+  topValue = \case
     Run v _ _ -> UMaybe.toBaseMaybe v
     Branch v _ -> UMaybe.toBaseMaybe v
+
+null :: Trie a -> Bool
+null (Branch UMaybe.Nothing children) = nullMap children
+null _ = False
 
 
 ------ Helpers ------
@@ -236,3 +330,17 @@ unsafeUnconsRun (Run v0 bs next) = (v0, c, run')
   bs' = Bytes.unsafeDrop 1 bs
   run' = prepend bs' next
 unsafeUnconsRun (Branch _ _) = error "unsafeUnconsRun on Branch trie"
+
+-- FIXME move this upstream
+insertMap :: Word8 -> a -> Map a -> Map a
+insertMap k v xs = Map.singleton k v `Map.union` xs
+
+-- FIXME move this upstream
+nullMap :: Map a -> Bool
+nullMap = Prelude.null . Map.toList
+
+-- TODO is this really a decent way to do this?
+fromSingletonMap :: Map a -> Maybe (Word8, a)
+fromSingletonMap mp = case Map.toList mp of
+  [(c, v)] -> Just (c, v)
+  _ -> Nothing

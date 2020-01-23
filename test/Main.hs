@@ -29,7 +29,7 @@ tests = testGroup "bytetrie"
       \(xs :: [(Bytes, Int)]) (k, v) ys ->
       let alist = xs ++ [(k, v)] ++ ys
       in if | Nothing <- lookup k ys ->
-              Trie.lookup k (Trie.fromList alist) === lookup k alist
+              Trie.lookup k (Trie.fromList alist) === lookup k (reverse alist)
             | otherwise -> property Discard
     , testProperty "lookup missing key" $
       \(alist :: [(Bytes, Int)]) (k :: Bytes) ->
@@ -59,6 +59,16 @@ tests = testGroup "bytetrie"
            , wa /= wb ->
               let t :: Trie Int = Trie.fromList [(a, 1)]
               in Trie.stripPrefixWithKey t b === Nothing
+           | otherwise -> property Discard
+    ]
+  , testGroup "delete"
+    [ testProperty "maintains invariant" $
+      \(xs :: [(Bytes, Int)]) (k, v) ys ->
+        if | Nothing <- lookup k xs
+           , Nothing <- lookup k ys ->
+              let t = Trie.fromList $ xs ++ [(k, v)] ++ ys
+                  t' = Trie.fromList $ xs ++ ys
+              in Trie.delete k t === t'
            | otherwise -> property Discard
     ]
   ]
