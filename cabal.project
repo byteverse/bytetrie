@@ -3,12 +3,7 @@ packages: .
 source-repository-package
   type: git
   location: https://github.com/andrewthad/byte-containers
-  tag: 22fc48f441fc0d2969081a44bd69023c1a6610b3
-
-source-repository-package
-  type: git
-  location: https://github.com/andrewthad/wide-word
-  tag: ca9fbe1baf89d1ef2b32f4c6cc96b3c2cc439f5b
+  tag: 41f9d76901a81d11dd6f161067e358e4b0ba2e4c
 
 source-repository-package
   type: git

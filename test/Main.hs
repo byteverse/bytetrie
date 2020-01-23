@@ -24,7 +24,20 @@ main = defaultMain tests
 
 tests :: TestTree
 tests = testGroup "bytetrie"
-  [ testGroup "lookup"
+  [ testGroup "validity"
+    [ testProperty "fromList validity" $ \alist ->
+      let a = Trie.fromList alist :: Trie Int
+      in Trie.valid a
+    , testProperty "unionWith maintains invariants" $ \xsList ysList ->
+      let xs = Trie.fromList xsList :: Trie Int
+          ys = Trie.fromList ysList
+      in Trie.valid (Trie.unionWith (+) xs ys)
+    , testProperty "delete maintains invariants" $ \alist k v ->
+      let a = Trie.fromList alist :: Trie Int
+          a' = Trie.insert k v a
+      in Trie.valid (Trie.delete k a) && Trie.valid (Trie.delete k a')
+    ]
+  , testGroup "lookup"
     [ testProperty "lookup existing key" $
       \(xs :: [(Bytes, Int)]) (k, v) ys ->
       let alist = xs ++ [(k, v)] ++ ys
