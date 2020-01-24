@@ -3,22 +3,25 @@
 
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
+import Control.Monad (forM_)
 import Data.Bytes.Types (Bytes(Bytes))
-import Data.List (sort)
+import Data.List (sort, isInfixOf)
 import Data.Monoid (Sum)
 import Data.Proxy (Proxy(..))
 import Data.Trie.Word8 (Trie)
 import Data.Word (Word8)
 import Test.Tasty (defaultMain,testGroup,TestTree)
+import Test.Tasty.HUnit (testCase,assertBool)
 import Test.Tasty.QuickCheck ((===),testProperty,property)
 import Test.Tasty.QuickCheck (Arbitrary)
 import Test.Tasty.QuickCheck (Discard(Discard))
 
-import qualified Data.Trie.Word8 as Trie
 import qualified Data.Bytes as Bytes
+import qualified Data.Trie.Word8 as Trie
 import qualified GHC.Exts as Exts
 import qualified Test.QuickCheck.Classes as QCC
 import qualified Test.Tasty.QuickCheck as TQC
+import qualified TestData
 
 main :: IO ()
 main = defaultMain tests
@@ -90,6 +93,13 @@ tests = testGroup "bytetrie"
       let a = Trie.fromList alist :: Trie ()
           out = Trie.toList a
       in out == sort out
+  , testCase "sed works" $ do
+      let sedList = Trie.multiFindReplace (Bytes.toLatinString) (Bytes.toLatinString)
+          outp = sedList TestData.replacements TestData.bigstring
+          replaced = ["Francisco", "Bernardo", "Marcellus", "Horatio", "Ghost", "What", "Why"]
+      forM_ replaced $ \word -> do
+        let assertName = "replaced " ++ word
+        assertBool assertName $ not (word `isInfixOf` outp)
   ]
 
 instance (Arbitrary a) => Arbitrary (Trie a) where

@@ -9,11 +9,24 @@
 {-# language TupleSections #-}
 {-# language ViewPatterns #-}
 
+-- | Tries with 'Bytes' (equiv. 'ByteArray') as keys.
+-- This implementation is optimized for performing queries rather
+-- than updating the structure repeatedly.
 module Data.Trie.Word8
   (
   -- * Trie Type
     Trie
   , valid
+  -- * Query
+  -- ** Lookup
+  , lookup
+  -- ** Search
+  , multiFindReplace
+  , stripPrefix
+  , stripPrefixWithKey
+  -- ** Size
+  , null
+  , size
   -- * Construction
   , empty
   , singleton
@@ -30,15 +43,6 @@ module Data.Trie.Word8
   , unionWith
   , append
   , prepend
-  -- * Query
-  -- ** Lookup
-  , lookup
-  -- ** Size
-  , null
-  , size
-  -- ** Detect Prefixes
-  , stripPrefix
-  , stripPrefixWithKey
   ) where
 
 import Prelude hiding (null, lookup)
@@ -137,6 +141,28 @@ valid (Branch _ children)
     && Map.foldrWithKeys nonNullChild True children
   where
   nonNullChild _ child !acc = acc && not (null child)
+
+------------ Find/Replace ------------
+
+-- | The raison-d'etre of this library: repeatedly search in a byte string
+-- for the longest of multiple patterns and make replacements.
+multiFindReplace :: Semigroup b
+  => (Bytes -> b) -- ^ construct a portion of the result from unmatched bytes
+  -> (a -> b) -- ^ construct a replacement from the found value
+  -> Trie a -- ^ the dictionary of all replacements
+  -> Bytes -- ^ input to be edited
+  -> b -- ^ result of replacement
+multiFindReplace fromNoMatch fromMatch t inp0 = go 0 inp0
+  where
+  needles = delete mempty t
+  -- `into` counts up until the first index where a replacement is found
+  go !into rawInp =
+    let inp = Bytes.unsafeDrop into rawInp
+        unMatched = Bytes.unsafeTake into rawInp
+    in if | Bytes.null inp -> fromNoMatch unMatched
+          | Just (val, rest) <- stripPrefix needles inp ->
+              fromNoMatch unMatched <> fromMatch val <> go 0 rest
+          | otherwise -> go (into + 1) rawInp
 
 
 ------------ Construction ------------
