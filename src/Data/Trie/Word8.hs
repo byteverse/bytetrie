@@ -172,44 +172,52 @@ insert = insertWith const
 insertWith :: (a -> a -> a) -> Bytes -> a -> Trie a -> Trie a
 insertWith f k v = unionWith f (singleton k v)
 
-delete :: Bytes -> Trie a -> Trie a
-delete k0 trie = go k0 trie
+delete :: forall a. Bytes -> Trie a -> Trie a
+delete k0 trie0 = go id k0 trie0
   where
-  -- `go` is not always tail-recursive.
+  -- The straightforward implementation of `go` is not always tail-recursive.
   -- Instead, each node with exactly one child must be checked after the
-  --  deletion to ensure that child is non-empty.
+  --  deletion to ensure that child is non-empty,
+  -- and each Run node must also be checked to ensure its child is non-linear.
+  --
+  -- Here, instead of using the Haskell stack, I build a continuation which
+  -- can be used to walk back out of the deletion, normalizing as it goes.
+  -- If the key is not present, this continuation can be bypassed.
   -- TODO
   -- However, as soon as it is known that the size must be greater than one,
   --  we can throw away all queued normalizations so far.
   -- Therefore, we maintain a delimited continuation as an accumulator,
   --  but I'm not yet sure how to manually store it.
   -- go :: Bytes -> Trie a
-  go key node@(Tip v)
+  go :: (Trie a -> Trie a) -> Bytes -> Trie a -> Trie a
+  go k key (Tip v)
+    -- found key, therefore delete and re-wrap
     | Bytes.null key
     , U.Just _ <- v -- NOTE this is redundant now, but when I use cps, it won't be
-      = empty
-    | otherwise = node
-  go key node@(Run v (fromByteArray -> run) next)
-    -- found key, therefore delete
+      = k empty
+    -- key not present: no change
+    | otherwise = trie0
+  go k key (Run v (fromByteArray -> run) next)
+    -- found key, therefore delete and re-wrap
     | Bytes.null key
     , U.Just _ <- v -- NOTE this is redundant now, but when I use cps, it won't be
-      = prepend run next
+      = k $ prepend run next
     -- carry on searching for the key
     | Just key' <- Bytes.stripPrefix run key
-      = Run v (toByteArray run) (go key' next)
-    -- key not present
-    | otherwise = node
-  go key node@(Branch v children)
-    -- found key, therefore delete
+      = go (k . Run v (toByteArray run)) key' next
+    -- key not present: no change
+    | otherwise = trie0
+  go k key (Branch v children)
+    -- found key, therefore delete and re-wrap
     | Bytes.null key
     , U.Just _ <- v
-      = UnsafeBranch U.Nothing children
+      = k $ UnsafeBranch U.Nothing children
     -- carry on searching for the key
     | Just (c, key') <- Bytes.uncons key
     , Just child <- Map.lookup c children
-      = Branch v (Map.insert c (go key' child) children)
-    -- key not present
-    | otherwise = node
+      = go (k . Branch v . \next -> Map.insert c next children) key' child
+    -- key not present: no change
+    | otherwise = trie0
 
 
 -- | Union of the two tries, but where a key appears in both,

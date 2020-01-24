@@ -77,7 +77,7 @@ tests = testGroup "bytetrie"
            | otherwise -> property Discard
     ]
   , testGroup "delete"
-    [ testProperty "maintains invariant" $
+    [ testProperty "removes a single element" $
       \(xs :: [(Bytes, Int)]) (k, v) ys ->
         if | Nothing <- lookup k xs
            , Nothing <- lookup k ys ->
