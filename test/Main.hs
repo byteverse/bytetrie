@@ -95,7 +95,8 @@ tests = testGroup "bytetrie"
       in out == sort out
   , testCase "sed works" $ do
       let sedList = Trie.multiFindReplace (Bytes.toLatinString) (Bytes.toLatinString)
-          outp = sedList TestData.replacements TestData.bigstring
+          bigstring = Bytes.fromLatinString TestData.bigstring
+          outp = sedList (TestData.replacements) bigstring
           replaced = ["Francisco", "Bernardo", "Marcellus", "Horatio", "Ghost", "What", "Why"]
       forM_ replaced $ \word -> do
         let assertName = "replaced " ++ word
