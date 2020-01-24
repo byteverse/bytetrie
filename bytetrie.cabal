@@ -19,11 +19,12 @@ library
   -- other-modules:
   build-depends:
     , base >=4.12 && <5
+    , bifunctors >=5
     , byte-containers
     , byteslice >=0.2.1
-    , unpacked-maybe >=0.1
     , primitive >=0.7.0.0
-    , bifunctors >=5
+    , small-bytearray-builder >=0.3
+    , unpacked-maybe >=0.1
   hs-source-dirs: src
   default-language: Haskell2010
   ghc-options: -Wall
@@ -45,6 +46,6 @@ test-suite test
     , unpacked-maybe >=0.1
   other-modules:
     , TestData
-  hs-source-dirs: test
+  hs-source-dirs: test, common
   default-language: Haskell2010
   ghc-options: -Werror -O2

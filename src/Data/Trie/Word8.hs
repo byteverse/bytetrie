@@ -22,6 +22,8 @@ module Data.Trie.Word8
   , lookup
   -- ** Search
   , multiFindReplace
+  , search
+  , replace
   , stripPrefix
   , stripPrefixWithKey
   -- ** Size
@@ -50,15 +52,19 @@ import Prelude hiding (null, lookup)
 import Control.Applicative ((<|>))
 import Data.Bifunctor (first)
 import Data.Bytes (Bytes, toByteArray, fromByteArray)
+import Data.Bytes.Chunks (Chunks)
 import Data.Foldable (foldl')
 import Data.Map.Word8 (Map)
 import Data.Maybe (isNothing)
+import Data.Monoid (Any(Any),getAny)
 import Data.Primitive.ByteArray (ByteArray, indexByteArray)
 import Data.Word (Word8)
 
+import qualified Data.ByteArray.Builder as Build
 import qualified Data.Bytes as Bytes
 import qualified Data.Map.Word8 as Map
 import qualified Data.Maybe.Unpacked as U
+
 
 -- | Tries implemented using a 256-entry bitmap as given in
 -- "Data.Map.Word8".
@@ -152,18 +158,27 @@ multiFindReplace :: Semigroup b
   -> Trie a -- ^ the dictionary of all replacements
   -> Bytes -- ^ input to be edited
   -> b -- ^ result of replacement
-multiFindReplace fromNoMatch fromMatch t inp0 = go 0 inp0
-  where
-  needles = delete mempty t
-  -- `into` counts up until the first index where a replacement is found
-  go !into rawInp =
-    let inp = Bytes.unsafeDrop into rawInp
-        unMatched = Bytes.unsafeTake into rawInp
-    in if | Bytes.null inp -> fromNoMatch unMatched
-          | Just (val, rest) <- stripPrefix needles inp ->
-              fromNoMatch unMatched <> fromMatch val <> go 0 rest
-          | otherwise -> go (into + 1) rawInp
+{-# inline multiFindReplace #-}
+multiFindReplace fromNoMatch fromMatch = \t ->
+  let needles = delete mempty t
+      -- `into` counts up until the first index where a replacement is found
+      go !into rawInp =
+        let inp = Bytes.unsafeDrop into rawInp
+            unMatched = Bytes.unsafeTake into rawInp
+        in if | Bytes.null inp -> fromNoMatch unMatched
+              | Just (val, rest) <- stripPrefix needles inp ->
+                  fromNoMatch unMatched <> fromMatch val <> go 0 rest
+              | otherwise -> go (into + 1) rawInp
+  in go 0
 
+replace :: Trie Bytes -> Bytes -> Chunks
+replace t inp = Build.run 4080 $ go t inp
+  where go = multiFindReplace Build.bytes Build.bytes
+
+search :: Trie a -> Bytes -> Bool
+search t inp = getAny $ go t inp
+  where
+  go = multiFindReplace (const mempty) (const $ Any True)
 
 ------------ Construction ------------
 
