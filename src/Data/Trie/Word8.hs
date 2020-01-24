@@ -166,15 +166,15 @@ multiFindReplace :: Semigroup b
 multiFindReplace fromNoMatch fromMatch = \ !t ->
   let !needles = delete mempty t
       -- `into` counts up until the first index where a replacement is found
-      go !into !rawInp =
-        let inp = Bytes.unsafeDrop into rawInp
-            unMatched = Bytes.unsafeTake into rawInp
+      go !unmatchedOff !rawInp =
+        let inp = Bytes.unsafeDrop unmatchedOff rawInp
+            unMatched = Bytes.unsafeTake unmatchedOff rawInp
         in if | Bytes.null inp -> fromNoMatch unMatched
-              | (# | (# val, into #) #) <- stripPrefix# needles inp ->
+              | (# | (# val, matchOff #) #) <- stripPrefix# needles inp ->
                   fromNoMatch unMatched
                   <> fromMatch val
-                  <> go 0 (Bytes.unsafeDrop (I# into) rawInp)
-              | otherwise -> go (into + 1) rawInp
+                  <> go 0 (Bytes.unsafeDrop (I# matchOff) inp)
+              | otherwise -> go (unmatchedOff + 1) rawInp
   in go 0
 
 replace :: Trie Bytes -> Bytes -> Chunks
