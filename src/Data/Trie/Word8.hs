@@ -100,7 +100,7 @@ data Trie a
   -- ByteArray uses more copying on modification,
   -- but the data structures are smaller than with Bytes, making lookup faster
   | UnsafeRun {-# unpack #-} !(U.Maybe a) {-# unpack #-} !ByteArray !(Trie a)
-  | UnsafeBranch {-# unpack #-} !(U.Maybe a) !(Map (Trie a))
+  | UnsafeBranch {-# unpack #-} !(U.Maybe a) {-# unpack #-} !(Map (Trie a))
   deriving (Eq, Functor)
 
 instance Semigroup a => Semigroup (Trie a) where (<>) = append
@@ -178,8 +178,20 @@ multiFindReplace fromNoMatch fromMatch = \ !t ->
   in go 0
 
 replace :: Trie Bytes -> Bytes -> Chunks
-replace t inp = Build.run 4080 $ go t inp
-  where go = multiFindReplace Build.copy Build.copy
+replace tx theInp = Build.run 4080 $ runIt tx theInp
+  where
+  runIt !t =
+    let !needles = delete mempty t
+        -- `into` counts up until the first index where a replacement is found
+        go !unmatchedOff !rawInp =
+          let inp = Bytes.unsafeDrop unmatchedOff rawInp
+              unMatched = Bytes.unsafeTake unmatchedOff rawInp
+          in if | Bytes.null inp -> Build.copy unMatched
+                | (# | (# val, matchOff #) #) <- stripPrefix# needles inp ->
+                    Build.copy2 unMatched val
+                    <> go 0 (Bytes.unsafeDrop (I# matchOff) inp)
+                | otherwise -> go (unmatchedOff + 1) rawInp
+    in go 0
 
 search :: Trie a -> Bytes -> Bool
 search t inp = getAny $ go t inp
