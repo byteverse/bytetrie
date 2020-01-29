@@ -2,11 +2,14 @@
 {-# language DeriveFunctor #-}
 {-# language DerivingStrategies #-}
 {-# language LambdaCase #-}
+{-# language MagicHash #-}
 {-# language MultiWayIf #-}
 {-# language PatternSynonyms #-}
 {-# language ScopedTypeVariables #-}
 {-# language StandaloneDeriving #-}
 {-# language TupleSections #-}
+{-# language UnboxedSums #-}
+{-# language UnboxedTuples #-}
 {-# language ViewPatterns #-}
 
 -- | Tries with 'Bytes' (equiv. 'ByteArray') as keys.
@@ -58,6 +61,7 @@ import Data.Map.Word8 (Map)
 import Data.Maybe (isNothing)
 import Data.Monoid (Any(Any),getAny)
 import Data.Primitive.ByteArray (ByteArray, indexByteArray)
+import GHC.Exts (Int(I#), Int#)
 import Data.Word (Word8)
 
 import qualified Data.ByteArray.Builder as Build
@@ -96,7 +100,7 @@ data Trie a
   -- ByteArray uses more copying on modification,
   -- but the data structures are smaller than with Bytes, making lookup faster
   | UnsafeRun {-# unpack #-} !(U.Maybe a) {-# unpack #-} !ByteArray !(Trie a)
-  | UnsafeBranch {-# unpack #-} !(U.Maybe a) !(Map (Trie a))
+  | UnsafeBranch {-# unpack #-} !(U.Maybe a) {-# unpack #-} !(Map (Trie a))
   deriving (Eq, Functor)
 
 instance Semigroup a => Semigroup (Trie a) where (<>) = append
@@ -159,21 +163,35 @@ multiFindReplace :: Semigroup b
   -> Bytes -- ^ input to be edited
   -> b -- ^ result of replacement
 {-# inline multiFindReplace #-}
-multiFindReplace fromNoMatch fromMatch = \t ->
-  let needles = delete mempty t
+multiFindReplace fromNoMatch fromMatch = \ !t ->
+  let !needles = delete mempty t
       -- `into` counts up until the first index where a replacement is found
-      go !into rawInp =
-        let inp = Bytes.unsafeDrop into rawInp
-            unMatched = Bytes.unsafeTake into rawInp
+      go !unmatchedOff !rawInp =
+        let inp = Bytes.unsafeDrop unmatchedOff rawInp
+            unMatched = Bytes.unsafeTake unmatchedOff rawInp
         in if | Bytes.null inp -> fromNoMatch unMatched
-              | Just (val, rest) <- stripPrefix needles inp ->
-                  fromNoMatch unMatched <> fromMatch val <> go 0 rest
-              | otherwise -> go (into + 1) rawInp
+              | (# | (# val, matchOff #) #) <- stripPrefix# needles inp ->
+                  fromNoMatch unMatched
+                  <> fromMatch val
+                  <> go 0 (Bytes.unsafeDrop (I# matchOff) inp)
+              | otherwise -> go (unmatchedOff + 1) rawInp
   in go 0
 
 replace :: Trie Bytes -> Bytes -> Chunks
-replace t inp = Build.run 4080 $ go t inp
-  where go = multiFindReplace Build.bytes Build.bytes
+replace tx theInp = Build.run 4080 $ runIt tx theInp
+  where
+  runIt !t =
+    let !needles = delete mempty t
+        -- `into` counts up until the first index where a replacement is found
+        go !unmatchedOff !rawInp =
+          let inp = Bytes.unsafeDrop unmatchedOff rawInp
+              unMatched = Bytes.unsafeTake unmatchedOff rawInp
+          in if | Bytes.null inp -> Build.copy unMatched
+                | (# | (# val, matchOff #) #) <- stripPrefix# needles inp ->
+                    Build.copy2 unMatched val
+                    <> go 0 (Bytes.unsafeDrop (I# matchOff) inp)
+                | otherwise -> go (unmatchedOff + 1) rawInp
+    in go 0
 
 search :: Trie a -> Bytes -> Bool
 search t inp = getAny $ go t inp
@@ -352,30 +370,45 @@ lookup k (Branch valO children) = case Bytes.uncons k of
 -- | Find the longest prefix of the input 'Bytes' which has a value in the trie.
 -- Returns the associated value and the remainder of the input after the prefix.
 stripPrefix :: Trie a -> Bytes -> Maybe (a, Bytes)
-stripPrefix trie inp = first snd <$> stripPrefixWithKey trie inp
+stripPrefix trie inp = case stripPrefix# trie inp of
+  (# (##) | #) -> Nothing
+  (# | (# val, into #) #) -> Just (val, Bytes.unsafeDrop (I# into) inp)
+
+
+stripPrefix# :: Trie a -> Bytes -> (# (##) | (# a, Int# #) #)
+stripPrefix# trie0 !rawInp = go 0 0 U.Nothing trie0
+  where
+  -- the `priorInto` argument is meaningful exactly when `prior` is `Just`
+  go :: Int -> Int -> U.Maybe a -> Trie a -> (# (##) | (# a, Int# #) #)
+  go !into !priorInto !priorVal node =
+    let inp = Bytes.unsafeDrop into rawInp
+        !foundInto@(I# foundInto# ) = case topValue node of
+          U.Nothing -> priorInto
+          U.Just _ -> into
+        foundVal = case topValue node of
+          U.Nothing -> priorVal
+          U.Just v -> U.Just v
+    in if | Run _ (fromByteArray -> run) next <- node
+          , run `Bytes.isPrefixOf` inp
+            -> go (into + Bytes.length run) foundInto foundVal next
+          | Branch _ children <- node
+          , Just (c, _) <- Bytes.uncons inp
+          , Just next <- Map.lookup c children
+            -> go (into + 1) foundInto foundVal next
+          | U.Just v <- foundVal
+            -> (# | (# v, foundInto# #) #)
+          | otherwise -> (# (##) | #)
+
 
 -- | Find the longest prefix of the input 'Bytes' which has a value in the trie.
 -- Returns the prefix and associated value found as a key/value tuple,
 -- and also the remainder of the input after the prefix.
 stripPrefixWithKey :: forall a. Trie a -> Bytes -> Maybe ((Bytes, a), Bytes)
-stripPrefixWithKey trie0 rawInp = go 0 Nothing trie0
-  where
-  go :: Int -> Maybe (Bytes, a) -> Trie a -> Maybe ((Bytes, a), Bytes)
-  go !into !prior node =
-    let inp = Bytes.unsafeDrop into rawInp
-        candidate = (Bytes.unsafeTake into rawInp,) <$> topValue node
-        found = candidate <|> prior
-    in if | Run _ (fromByteArray -> run) next <- node
-          , run `Bytes.isPrefixOf` inp
-            -> go (into + Bytes.length run) found next
-          | Branch _ children <- node
-          , Just (c, _) <- Bytes.uncons inp
-          , Just next <- Map.lookup c children
-            -> go (into + 1) found next
-          | otherwise -> mkReturn <$> found
-  mkReturn (prefix, v) =
-    let post = Bytes.unsafeDrop (Bytes.length prefix) rawInp
-    in ((prefix, v), post)
+stripPrefixWithKey !trie0 !rawInp = case stripPrefix trie0 rawInp of
+  Nothing -> Nothing
+  Just (v, post) ->
+    let pre = Bytes.unsafeTake (Bytes.length rawInp - Bytes.length post) rawInp
+    in Just ((pre, v), post)
 
 
 null :: Trie a -> Bool
@@ -385,7 +418,7 @@ null _ = False
 size :: Trie a -> Int
 size node = here + under
   where
-  here = maybe 0 (const 1) (topValue node)
+  here = U.maybe 0 (const 1) (topValue node)
   under = case node of
     Tip _ -> 0
     Run _ _ next -> size next
@@ -393,11 +426,11 @@ size node = here + under
 
 ------ Helpers ------
 
-topValue :: Trie a -> Maybe a
+topValue :: Trie a -> U.Maybe a
 topValue = \case
-  Tip v -> U.toBaseMaybe v
-  Run v _ _ -> U.toBaseMaybe v
-  Branch v _ -> U.toBaseMaybe v
+  Tip v -> v
+  Run v _ _ -> v
+  Branch v _ -> v
 
 unsafeUnconsRun :: Trie a -> (U.Maybe a, Word8, Trie a)
 unsafeUnconsRun (Run v0 bs next) = (v0, c, run')
