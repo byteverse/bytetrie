@@ -60,7 +60,7 @@ import Data.Monoid (Any(Any),getAny)
 import Data.Primitive.ByteArray (ByteArray, indexByteArray)
 import Data.Word (Word8)
 
-import qualified Data.ByteArray.Builder as Build
+import qualified Data.Bytes.Builder as Build
 import qualified Data.Bytes as Bytes
 import qualified Data.Map.Word8 as Map
 import qualified Data.Maybe.Unpacked as U
