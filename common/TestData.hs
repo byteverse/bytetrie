@@ -10,6 +10,7 @@ import Data.Char (ord)
 import Data.Trie.Word8 (Trie)
 import Data.Word (Word8)
 
+import qualified Data.Bytes.Text.Latin1 as Latin1
 import qualified Data.Bytes as Bytes
 import qualified Data.List as List
 import qualified Data.Primitive as PM
@@ -22,7 +23,7 @@ c2w = fromIntegral . ord
 
 
 replacements :: Trie Bytes
-replacements = Trie.fromList $ map (bimap Bytes.fromLatinString Bytes.fromLatinString) $
+replacements = Trie.fromList $ map (bimap Latin1.fromString Latin1.fromString) $
   [ ("Francisco", "Frank")
   , ("Bernardo", "Bob")
   , ("Marcellus", "Mark")
@@ -33,7 +34,7 @@ replacements = Trie.fromList $ map (bimap Bytes.fromLatinString Bytes.fromLatinS
   ]
 
 bigstring :: Bytes
-bigstring = Bytes.fromLatinString . unlines $
+bigstring = Latin1.fromString . unlines $
   [ "Enter two Sentinels-[first,] Francisco, [who paces up and down at his post; then] Bernardo, [who approaches him]."
   , "Bernardo. Who's there?"
   , "Francisco. Nay, answer me. Stand and unfold yourself."

@@ -21,7 +21,7 @@ library
     , base >=4.12 && <5
     , bifunctors >=5
     , byte-containers
-    , byteslice >=0.2.1
+    , byteslice >=0.2.7
     , primitive >=0.7.0.0
     , bytebuild >=0.3
     , unpacked-maybe >=0.1

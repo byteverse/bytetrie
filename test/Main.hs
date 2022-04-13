@@ -17,6 +17,7 @@ import Test.Tasty.QuickCheck (Arbitrary)
 import Test.Tasty.QuickCheck (Discard(Discard))
 
 import qualified Data.Bytes as Bytes
+import qualified Data.Bytes.Text.Latin1 as Latin1
 import qualified Data.Trie.Word8 as Trie
 import qualified GHC.Exts as Exts
 import qualified Test.QuickCheck.Classes as QCC
@@ -94,7 +95,7 @@ tests = testGroup "bytetrie"
           out = Trie.toList a
       in out == sort out
   , testCase "sed works" $ do
-      let sedList = Trie.multiFindReplace (Bytes.toLatinString) (Bytes.toLatinString)
+      let sedList = Trie.multiFindReplace Latin1.toString Latin1.toString
           outp = sedList TestData.replacements TestData.bigstring
           replaced = ["Francisco", "Bernardo", "Marcellus", "Horatio", "Ghost", "What", "Why"]
       forM_ replaced $ \word -> do
