@@ -36,6 +36,7 @@ module Data.Trie.Word8
   -- ** Conversion
   , fromList
   , toList
+  , foldl'
   -- ** Insertion
   , insert
   , insertWith
@@ -54,13 +55,13 @@ import Control.Applicative ((<|>))
 import Data.Bifunctor (first)
 import Data.Bytes (Bytes, toByteArray, fromByteArray)
 import Data.Bytes.Chunks (Chunks)
-import Data.Foldable (foldl')
 import Data.Map.Word8 (Map)
 import Data.Maybe (isNothing)
 import Data.Monoid (Any(Any),getAny)
 import Data.Primitive.ByteArray (ByteArray, indexByteArray)
 import Data.Word (Word8)
 
+import qualified Data.Foldable as Foldable
 import qualified Data.Bytes.Builder as Build
 import qualified Data.Bytes as Bytes
 import qualified Data.Map.Word8 as Map
@@ -316,7 +317,7 @@ unionWith f trieA trieB = case (trieA, trieB) of
 -- If more than one value for the same key appears, the last value for that
 -- key is retained.
 fromList :: [(Bytes, a)] -> Trie a
-fromList kvs = foldl' (\xs (k, v) -> insert k v xs) empty kvs
+fromList kvs = Foldable.foldl' (\xs (k, v) -> insert k v xs) empty kvs
 
 -- | Convert the trie to a list of key/value pairs.
 -- The resulting list has its keys sorted in ascending order.
@@ -331,6 +332,23 @@ toList = \case
   fromValue valO = (mempty,) <$> U.maybeToList valO
   prependList run list = first (run <>) <$> list
 
+foldl' :: (b -> a -> b) -> b -> Trie a -> b
+{-# inline foldl' #-}
+foldl' f !b0 t0 = go b0 t0 where
+  go !b t = case t of
+    Tip valO -> case valO of
+      U.Just x -> f b x
+      _ -> b
+    Run valO _ next ->
+      let b' = case valO of
+            U.Just x -> f b x
+            _ -> b
+       in go b' next
+    Branch valO children ->
+      let b' = case valO of
+            U.Just x -> f b x
+            _ -> b
+       in Map.foldl' go b' children
 
 ------------ Query ------------
 
