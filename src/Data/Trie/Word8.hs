@@ -37,6 +37,7 @@ module Data.Trie.Word8
   , fromList
   , toList
   , foldl'
+  , traverse_
   -- ** Insertion
   , insert
   , insertWith
@@ -349,6 +350,20 @@ foldl' f !b0 t0 = go b0 t0 where
             U.Just x -> f b x
             _ -> b
        in Map.foldl' go b' children
+
+traverse_ :: Applicative m => (a -> m b) -> Trie a -> m ()
+{-# inline traverse_ #-}
+traverse_ f t0 = go t0 where
+  go t = case t of
+    Tip valO -> case valO of
+      U.Just x -> f x *> pure ()
+      _ -> pure ()
+    Run valO _ next -> case valO of
+      U.Just x -> f x *> go next
+      _ -> go next
+    Branch valO children -> case valO of
+      U.Just x -> f x *> Map.traverse_ go children
+      _ -> Map.traverse_ go children
 
 ------------ Query ------------
 

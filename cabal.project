@@ -3,4 +3,4 @@ packages: .
 source-repository-package
   type: git
   location: https://github.com/andrewthad/byte-containers
-  tag: 4ae296fc56f1e90a766b3053a5d06a9fd5474746
+  tag: 46d2ae7ea5a7e1de01aab37475eb15f7c0c009d6
