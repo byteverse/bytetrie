@@ -21,6 +21,7 @@ module Data.Trie.Word8
   -- ** Lookup
   , lookup
   , lookupTrie
+  , lookupPrefixes
   -- ** Search
   , multiFindReplace
   , search
@@ -381,6 +382,37 @@ lookup k (Run v (fromByteArray -> run) next)
 lookup k (Branch valO children) = case Bytes.uncons k of
   Prelude.Nothing -> U.toBaseMaybe valO
   Prelude.Just (c, k') -> lookup k' =<< Map.lookup c children
+
+-- | Lookup the value at the 'Bytes' key in the trie. Returns the value
+-- of the exact match and the values for any keys that are prefixes of
+-- the search key. The shortest prefix is first. The exact match (if there
+-- is one) is last.
+lookupPrefixes :: Bytes -> Trie a -> [a]
+{-# inline lookupPrefixes #-}
+lookupPrefixes = lookupPrefixesGo []
+
+lookupPrefixesGo :: [a] -> Bytes -> Trie a -> [a]
+lookupPrefixesGo !acc !_ (Tip v)
+  | U.Just x <- v = x : acc
+  | otherwise = acc
+lookupPrefixesGo !acc !k (UnsafeRun v (fromByteArray -> run) next) =
+  let acc' = case v of
+        U.Just x -> x : acc
+        _ -> acc
+   in if | Bytes.null k -> acc'
+         | run `Bytes.isPrefixOf` k ->
+             let k' = Bytes.unsafeDrop (Bytes.length run) k
+              in lookupPrefixesGo acc' k' next
+         | otherwise -> acc'
+lookupPrefixesGo !acc !k (UnsafeBranch valO children) =
+  let acc' = case valO of
+        U.Just x -> x : acc
+        _ -> acc
+   in case Bytes.uncons k of
+        Prelude.Nothing -> acc'
+        Prelude.Just (c, k') -> case Map.lookup c children of
+          Nothing -> acc'
+          Just child -> lookupPrefixesGo acc' k' child
 
 -- | Lookup the trie at the 'Bytes' key in the trie. Returns the subtrie
 -- at this position.
