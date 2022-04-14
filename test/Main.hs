@@ -4,6 +4,7 @@
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 import Control.Monad (forM_)
+import Data.Bifunctor (first)
 import Data.Bytes.Types (Bytes(Bytes))
 import Data.List (sort, isInfixOf)
 import Data.Monoid (Sum)
@@ -60,6 +61,17 @@ tests = testGroup "bytetrie"
     , lawsToTest (QCC.commutativeMonoidLaws (Proxy :: Proxy (Trie (Sum Integer))))
     ]
   , lawsToTest (QCC.functorLaws (Proxy :: Proxy Trie))
+  , testGroup "lookupTrie"
+    [ testProperty "alpha" $
+      \(x :: Bytes) (y :: Bytes) (val :: Int) (xs :: [(Bytes,Int)]) ->
+        let base = Trie.insert (x <> y) val (Trie.fromList xs)
+         in Trie.lookup (x <> y) base === Trie.lookup y (Trie.lookupTrie x base)
+    , testProperty "beta" $
+      \(x :: Bool) (y :: Bool) (val :: Int) (xs :: [([Bool],Int)]) ->
+        let xs' = map (first (foldMap boolToBytes)) xs
+            base = Trie.insert (boolToBytes x <> boolToBytes y) val (Trie.fromList xs')
+         in Trie.lookup (boolToBytes x <> boolToBytes y) base === Trie.lookup (boolToBytes y) (Trie.lookupTrie (boolToBytes x) base)
+    ]
   , testGroup "stripPrefix"
     [ testProperty "finds longest prefix" $
       \(a :: Bytes) (b :: Bytes) (c :: Bytes) (d :: Bytes) ->
@@ -117,3 +129,7 @@ instance Arbitrary Bytes where
 
 lawsToTest :: QCC.Laws -> TestTree
 lawsToTest (QCC.Laws name pairs) = testGroup name (map (uncurry TQC.testProperty) pairs)
+
+boolToBytes :: Bool -> Bytes
+boolToBytes True = Bytes.singleton 1
+boolToBytes False = Bytes.singleton 0

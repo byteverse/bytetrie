@@ -20,6 +20,7 @@ module Data.Trie.Word8
   -- * Query
   -- ** Lookup
   , lookup
+  , lookupTrie
   -- ** Search
   , multiFindReplace
   , search
@@ -348,6 +349,29 @@ lookup k (Branch valO children) = case Bytes.uncons k of
   Prelude.Nothing -> U.toBaseMaybe valO
   Prelude.Just (c, k') -> lookup k' =<< Map.lookup c children
 
+-- | Lookup the trie at the 'Bytes' key in the trie. Returns the subtrie
+-- at this position.
+--
+-- >>> (k1 <> k2 == k) ==> (lookup k v t == lookup k2 (lookupTrie k1 t))
+lookupTrie :: Bytes -> Trie a -> Trie a
+lookupTrie !k trie
+  | Bytes.null k = trie
+  | otherwise = case trie of
+      Tip{} -> empty
+      Run _ (fromByteArray -> run) next
+        | run `Bytes.isPrefixOf` k ->
+          let k' = Bytes.unsafeDrop (Bytes.length run) k
+          in lookupTrie k' next
+        | k `Bytes.isPrefixOf` run ->
+          let run' = Bytes.unsafeDrop (Bytes.length k) run
+           in Run U.Nothing (Bytes.toByteArrayClone run') next
+        | otherwise -> empty
+      Branch _ children ->
+        let !k' = Bytes.unsafeDrop 1 k
+            !c = Bytes.unsafeIndex k 0
+         in case Map.lookup c children of
+              Nothing -> empty
+              Just child -> lookupTrie k' child
 
 -- | Find the longest prefix of the input 'Bytes' which has a value in the trie.
 -- Returns the associated value and the remainder of the input after the prefix.
