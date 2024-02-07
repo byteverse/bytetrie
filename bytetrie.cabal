@@ -17,42 +17,41 @@ bug-reports:     https://github.com/byteverse/bytetrie/issues
 license:         BSD-3-Clause
 license-file:    LICENSE
 extra-doc-files: CHANGELOG.md
+tested-with:     GHC ==9.4.8 || ==9.6.3 || ==9.8.1
+
+common build-settings
+  default-language: Haskell2010
+  ghc-options:      -Wall -Wunused-packages
 
 library
-  exposed-modules:  Data.Trie.Word8
+  import:          build-settings
+  exposed-modules: Data.Trie.Word8
   build-depends:
     , base             >=4.12   && <5
-    , bifunctors       >=5.6.1  && <5.7
     , byte-containers  >=0.1    && <0.2.0
     , bytebuild        >=0.3.16 && <0.4
     , byteslice        >=0.2.13 && <0.3
     , primitive        >=0.7    && <0.10
     , unpacked-maybe   >=0.1.0  && <0.2
 
-  hs-source-dirs:   src
-  default-language: Haskell2010
-  ghc-options:      -Wall -O2
+  hs-source-dirs:  src
+  ghc-options:     -O2
 
 test-suite test
-  main-is:          Main.hs
-  type:             exitcode-stdio-1.0
+  import:         build-settings
+  main-is:        Main.hs
+  type:           exitcode-stdio-1.0
   build-depends:
     , base                >=4.12   && <5
-    , byte-containers     >=0.1    && <0.2.0
     , byteslice           >=0.2.13 && <0.3
     , bytetrie
-    , primitive           >=0.7    && <0.10
-    , primitive-unlifted  >=0.1.2  && <0.2
     , quickcheck-classes  >=0.6.4
     , tasty
     , tasty-hunit         >=0.10
     , tasty-quickcheck
-    , unpacked-maybe      >=0.1.0  && <0.2
 
-  other-modules:    TestData
-  hs-source-dirs:   test common
-  default-language: Haskell2010
-  ghc-options:      -Wall -O2
+  other-modules:  TestData
+  hs-source-dirs: test common
 
 source-repository head
   type:     git
